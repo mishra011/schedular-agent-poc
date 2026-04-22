@@ -8,7 +8,7 @@ from uuid import uuid4
 from langchain_core.messages import HumanMessage, BaseMessage, AIMessage
 
 # Import everything we need from sch2
-from sch2 import graph, handle_smalltalk, MOCK_DB
+from sch2 import graph, handle_smalltalk, appointments_collection
 
 app = FastAPI(title="Appointment Scheduler API", version="1.0.0")
 
@@ -40,8 +40,8 @@ async def chat_endpoint(req: ChatRequest):
     sessions[session_id].append(HumanMessage(content=user_input))
     
     try:
-        # Invoke graph
-        result = graph.invoke({"messages": sessions[session_id]})
+        # Invoke graph asynchronously
+        result = await graph.ainvoke({"messages": sessions[session_id]})
         sessions[session_id] = result["messages"]
         
         final_text = None
@@ -58,7 +58,11 @@ async def chat_endpoint(req: ChatRequest):
 
 @app.get("/db")
 async def get_db():
-    return MOCK_DB
+    cursor = appointments_collection.find({})
+    records = await cursor.to_list(length=1000)
+    for record in records:
+        record["_id"] = str(record["_id"])
+    return records
 
 @app.get("/health")
 async def health_check():

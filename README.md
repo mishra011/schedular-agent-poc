@@ -1,6 +1,6 @@
 # Appointment Scheduler API
 
-A FastAPI application that uses LangChain, LangGraph, and Ollama to manage an appointment scheduler. It allows users to schedule, reschedule, and cancel appointments using natural language, and exposes a RESTful API.
+A FastAPI application that uses LangChain, LangGraph, Ollama, and MongoDB to manage an appointment scheduler. It allows users to schedule, reschedule, and cancel appointments using natural language, and exposes a RESTful API.
 
 ## Features
 
@@ -8,6 +8,7 @@ A FastAPI application that uses LangChain, LangGraph, and Ollama to manage an ap
 - **FastAPI Backend**: Fast, asynchronous REST framework.
 - **Dockerized**: Easily run the application using Docker and Docker Compose.
 - **Ollama Integration**: Connects to your local Ollama instance for LLM capabilities.
+- **Persistent Database**: Tracks all appointment data using an asynchronous MongoDB container.
 
 ## Prerequisites
 
@@ -80,8 +81,7 @@ curl http://localhost:8000/health
 Here is a list of planned enhancements to make the application production-ready:
 
 ### 1. Database & Persistence
-*   **Persistent Database:** Replace the in-memory `MOCK_DB` with a real database (like PostgreSQL, MySQL, or MongoDB) using an ORM (like SQLAlchemy) or ODM (like Beanie/Motor) for reliable data storage.
-*   **Conversation State Persistence:** Implement a persistent memory backend (like Redis, PostgreSQL, or MongoDB) for LangGraph checkpoints so users don't lose their session history on server restarts.
+*   **Conversation State Persistence:** Store chat data in MongoDB and session data in Redis for LangGraph checkpoints so users don't lose their session history on server restarts.
 
 ### 2. Security & Authentication
 *   **Authentication & Authorization:** Secure the `/chat` endpoint using JWT tokens or OAuth2. Ensure users can only schedule, view, or cancel their *own* appointments.

@@ -10,11 +10,11 @@ Features:
 - check available slots for a date
 - basic input validation
 - conversation memory in the same CLI session
-- mocked DB and mocked calendar availability
+- MongoDB backend
 - simple chit-chat handling for hi/hello/thanks/bye
 
 Install:
-    pip install -U langchain langgraph langchain-ollama
+    pip install -U langchain langgraph langchain-ollama motor
 
 Run:
     ollama pull llama3.1:latest
@@ -24,6 +24,7 @@ Run:
 from __future__ import annotations
 
 import os
+import asyncio
 from typing import Annotated, TypedDict, List, Dict
 from uuid import uuid4
 from datetime import datetime
@@ -35,30 +36,18 @@ from langgraph.graph import StateGraph, END
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 
+from motor.motor_asyncio import AsyncIOMotorClient
+
 
 # ============================================================
-# Mock DB
+# Database connection
 # ============================================================
 
-MOCK_DB: Dict[str, Dict] = {
-    "apt-1001": {
-        "appointment_id": "apt-1001",
-        "customer_name": "Rahul",
-        "date": "2026-04-25",
-        "time": "10:00",
-        "reason": "Dental checkup",
-        "status": "scheduled",
-    },
-    "apt-1002": {
-        "appointment_id": "apt-1002",
-        "customer_name": "Neha",
-        "date": "2026-04-25",
-        "time": "11:00",
-        "reason": "Eye consultation",
-        "status": "scheduled",
-    },
-}
-
+MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")
+MONGO_DB = os.getenv("MONGO_DB", "scheduler_db")
+client = AsyncIOMotorClient(MONGO_URI)
+db = client[MONGO_DB]
+appointments_collection = db.appointments
 
 # ============================================================
 # Helpers
@@ -98,25 +87,23 @@ def is_future_or_today(date_str: str) -> bool:
     return target >= today
 
 
-def appointment_exists(appointment_id: str) -> bool:
-    return appointment_id in MOCK_DB and MOCK_DB[appointment_id]["status"] == "scheduled"
+async def appointment_exists(appointment_id: str) -> bool:
+    appt = await appointments_collection.find_one({"appointment_id": appointment_id, "status": "scheduled"})
+    return appt is not None
 
 
-def is_slot_available(date: str, time: str, exclude_appointment_id: str | None = None) -> bool:
-    for appt_id, record in MOCK_DB.items():
-        if record["status"] != "scheduled":
-            continue
-        if exclude_appointment_id and appt_id == exclude_appointment_id:
-            continue
-        if record["date"] == date and record["time"] == time:
-            return False
-    return True
+async def is_slot_available(date: str, time: str, exclude_appointment_id: str | None = None) -> bool:
+    query = {"date": date, "time": time, "status": "scheduled"}
+    if exclude_appointment_id:
+        query["appointment_id"] = {"$ne": exclude_appointment_id}
+    appt = await appointments_collection.find_one(query)
+    return appt is None
 
 
-def get_available_slots(date: str) -> List[str]:
+async def get_available_slots(date: str) -> List[str]:
     available = []
     for slot in WORKING_HOURS:
-        if is_slot_available(date, slot):
+        if await is_slot_available(date, slot):
             available.append(slot)
     return available
 
@@ -154,7 +141,7 @@ def handle_smalltalk(user_input: str) -> str | None:
 # ============================================================
 
 @tool
-def schedule_appointment(customer_name: str, date: str, time: str, reason: str) -> str:
+async def schedule_appointment(customer_name: str, date: str, time: str, reason: str) -> str:
     """Schedule a new appointment."""
     if not customer_name.strip():
         return "FAILED: customer_name is required."
@@ -171,14 +158,14 @@ def schedule_appointment(customer_name: str, date: str, time: str, reason: str) 
     if not reason.strip():
         return "FAILED: reason is required."
 
-    if not is_slot_available(date, time):
-        alt = get_available_slots(date)
+    if not await is_slot_available(date, time):
+        alt = await get_available_slots(date)
         if alt:
             return f"FAILED: Slot {date} {time} is not available. Available slots on {date}: {', '.join(alt)}"
         return f"FAILED: Slot {date} {time} is not available and no slots are free on {date}."
 
     appointment_id = f"apt-{str(uuid4())[:8]}"
-    MOCK_DB[appointment_id] = {
+    record = {
         "appointment_id": appointment_id,
         "customer_name": customer_name,
         "date": date,
@@ -186,14 +173,16 @@ def schedule_appointment(customer_name: str, date: str, time: str, reason: str) 
         "reason": reason,
         "status": "scheduled",
     }
+    
+    await appointments_collection.insert_one(record)
 
-    return "SUCCESS: " + format_appointment(MOCK_DB[appointment_id])
+    return "SUCCESS: " + format_appointment(record)
 
 
 @tool
-def reschedule_appointment(appointment_id: str, new_date: str, new_time: str) -> str:
+async def reschedule_appointment(appointment_id: str, new_date: str, new_time: str) -> str:
     """Reschedule an existing appointment."""
-    if not appointment_exists(appointment_id):
+    if not await appointment_exists(appointment_id):
         return f"FAILED: appointment {appointment_id} not found."
 
     if not is_valid_date(new_date):
@@ -205,30 +194,38 @@ def reschedule_appointment(appointment_id: str, new_date: str, new_time: str) ->
     if not is_valid_time(new_time):
         return f"FAILED: new_time must be one of {WORKING_HOURS}."
 
-    if not is_slot_available(new_date, new_time, exclude_appointment_id=appointment_id):
-        alt = get_available_slots(new_date)
+    if not await is_slot_available(new_date, new_time, exclude_appointment_id=appointment_id):
+        alt = await get_available_slots(new_date)
         if alt:
             return f"FAILED: Slot {new_date} {new_time} is not available. Available slots on {new_date}: {', '.join(alt)}"
         return f"FAILED: Slot {new_date} {new_time} is not available and no slots are free on {new_date}."
 
-    MOCK_DB[appointment_id]["date"] = new_date
-    MOCK_DB[appointment_id]["time"] = new_time
-
-    return "SUCCESS: " + format_appointment(MOCK_DB[appointment_id])
+    await appointments_collection.update_one(
+        {"appointment_id": appointment_id},
+        {"$set": {"date": new_date, "time": new_time}}
+    )
+    
+    appt = await appointments_collection.find_one({"appointment_id": appointment_id})
+    return "SUCCESS: " + format_appointment(appt)
 
 
 @tool
-def cancel_appointment(appointment_id: str) -> str:
+async def cancel_appointment(appointment_id: str) -> str:
     """Cancel an existing appointment."""
-    if not appointment_exists(appointment_id):
+    if not await appointment_exists(appointment_id):
         return f"FAILED: appointment {appointment_id} not found."
 
-    MOCK_DB[appointment_id]["status"] = "cancelled"
-    return "SUCCESS: " + format_appointment(MOCK_DB[appointment_id])
+    await appointments_collection.update_one(
+        {"appointment_id": appointment_id},
+        {"$set": {"status": "cancelled"}}
+    )
+    
+    appt = await appointments_collection.find_one({"appointment_id": appointment_id})
+    return "SUCCESS: " + format_appointment(appt)
 
 
 @tool
-def check_available_slots(date: str) -> str:
+async def check_available_slots(date: str) -> str:
     """Check available appointment slots for a given date."""
     if not is_valid_date(date):
         return "FAILED: date must be in YYYY-MM-DD format."
@@ -236,19 +233,22 @@ def check_available_slots(date: str) -> str:
     if not is_future_or_today(date):
         return "FAILED: date cannot be in the past."
 
-    slots = get_available_slots(date)
+    slots = await get_available_slots(date)
     if not slots:
         return f"SUCCESS: No slots available on {date}."
     return f"SUCCESS: Available slots on {date}: {', '.join(slots)}"
 
 
 @tool
-def find_appointment_by_customer(customer_name: str) -> str:
+async def find_appointment_by_customer(customer_name: str) -> str:
     """Find scheduled appointments by customer name."""
+    cursor = appointments_collection.find({
+        "status": "scheduled", 
+        "customer_name": {"$regex": f"^{customer_name}$", "$options": "i"}
+    })
     matches = []
-    for record in MOCK_DB.values():
-        if record["status"] == "scheduled" and record["customer_name"].lower() == customer_name.lower():
-            matches.append(format_appointment(record))
+    async for record in cursor:
+        matches.append(format_appointment(record))
 
     if not matches:
         return f"FAILED: no scheduled appointment found for customer_name={customer_name}"
@@ -314,8 +314,8 @@ Rules:
 # Nodes
 # ============================================================
 
-def assistant_node(state: AgentState) -> AgentState:
-    response = llm_with_tools.invoke(
+async def assistant_node(state: AgentState) -> AgentState:
+    response = await llm_with_tools.ainvoke(
         [SystemMessage(content=SYSTEM_PROMPT)] + state["messages"]
     )
     return {"messages": [response]}
@@ -350,15 +350,20 @@ graph = builder.compile()
 # CLI
 # ============================================================
 
-def print_db() -> None:
-    print("\nCurrent Mock DB:")
-    if not MOCK_DB:
+async def print_db() -> None:
+    print("\nCurrent DB:")
+    cursor = appointments_collection.find({})
+    records = await cursor.to_list(length=100)
+    
+    if not records:
         print("  (empty)")
         return
 
-    for appt_id, record in MOCK_DB.items():
+    for record in records:
+        # Convert ObjectId to string for easy reading, though not strictly required
+        record.pop("_id", None)
         print(
-            f"  {appt_id} | {record['customer_name']} | "
+            f"  {record['appointment_id']} | {record['customer_name']} | "
             f"{record['date']} {record['time']} | "
             f"{record['reason']} | {record['status']}"
         )
@@ -376,15 +381,16 @@ def print_examples() -> None:
     print("  Bye")
 
 
-def chat() -> None:
-    print("Appointment Scheduler / Rescheduler / Canceller")
+async def async_chat() -> None:
+    print("Appointment Scheduler / Rescheduler / Canceller (MongoDB)")
     print("Type 'exit' to quit.")
     print_examples()
-    print_db()
+    await print_db()
 
     messages: List[BaseMessage] = []
 
     while True:
+        # Note: input() is blocking, but it's fine for simple CLI
         user_input = input("\nYou: ").strip()
 
         if user_input.lower() in {"exit", "quit"}:
@@ -401,7 +407,7 @@ def chat() -> None:
 
         messages.append(HumanMessage(content=user_input))
 
-        result = graph.invoke({"messages": messages})
+        result = await graph.ainvoke({"messages": messages})
         messages = result["messages"]
 
         final_text = None
@@ -411,8 +417,10 @@ def chat() -> None:
                 break
 
         print("\nAssistant:", final_text if final_text else "(no response)")
-        print_db()
+        await print_db()
 
+def chat() -> None:
+    asyncio.run(async_chat())
 
 if __name__ == "__main__":
     chat()
