@@ -74,3 +74,27 @@ Check if the API is running.
 ```bash
 curl http://localhost:8000/health
 ```
+
+## Future Tasks
+
+Here is a list of planned enhancements to make the application production-ready:
+
+### 1. Database & Persistence
+*   **Persistent Database:** Replace the in-memory `MOCK_DB` with a real database (like PostgreSQL, MySQL, or MongoDB) using an ORM (like SQLAlchemy) or ODM (like Beanie/Motor) for reliable data storage.
+*   **Conversation State Persistence:** Implement a persistent memory backend (like Redis, PostgreSQL, or MongoDB) for LangGraph checkpoints so users don't lose their session history on server restarts.
+
+### 2. Security & Authentication
+*   **Authentication & Authorization:** Secure the `/chat` endpoint using JWT tokens or OAuth2. Ensure users can only schedule, view, or cancel their *own* appointments.
+*   **Restrict Sensitive Endpoints:** Restrict access to the `/db` endpoint to admins only or remove it entirely in production.
+*   **Rate Limiting:** Implement rate limiting on the FastAPI endpoints to prevent abuse.
+
+### 3. Reliability & Architecture
+*   **Concurrency & Race Conditions:** Implement database transactions or locking mechanisms to ensure two users cannot book the same time slot simultaneously.
+*   **Dynamic Calendar Integration:** Integrate with a real calendar API (like Google Calendar or Microsoft Outlook) to sync availability in real-time instead of using hardcoded working hours.
+*   **Robust Error Handling:** Improve error handling to return specific HTTP status codes (400, 401, 404, etc.) instead of generic 500 errors, and implement structured logging.
+
+### 4. Testing & Deployment
+*   **Automated Testing:** Implement a comprehensive test suite using `pytest` to test the API endpoints, tool functions, and LangGraph agent logic.
+*   **CI/CD Pipeline:** Set up Continuous Integration and Deployment (e.g., GitHub Actions) to automatically test code, build Docker images, and deploy.
+*   **Environment Configuration Management:** Use a robust configuration manager (like Pydantic Settings) to manage environment variables and secrets securely.
+
